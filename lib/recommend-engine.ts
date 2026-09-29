@@ -770,21 +770,25 @@ if (exactPhraseMatches.length > 0) {
   }
 
   /**
-   * Product match.
-   */
-  if (
+ * Product match.
+ *
+ * The requested product is the primary retrieval signal.
+ * An exact product match should outweigh a generic
+ * application match such as "human consumption".
+ */
+if (
   analysis.product &&
   (title.includes(normalize(analysis.product)) ||
     detailedMetadata.includes(normalize(analysis.product)) ||
     category.includes(normalize(analysis.product)))
-){
-    points += 20
-    possiblePoints += 20
-    matchedConcepts.push(analysis.product)
-    matchedSignals.push('Product match')
-  } else {
-    possiblePoints += 20
-  }
+) {
+  points += 40
+  possiblePoints += 40
+  matchedConcepts.push(analysis.product)
+  matchedSignals.push('Product match')
+} else {
+  possiblePoints += 40
+}
 
   /**
    * Material match.
