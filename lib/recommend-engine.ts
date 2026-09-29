@@ -2,6 +2,8 @@ import type {
   Recommendation,
   RequirementAnalysis,
   RequirementGapAnalysis,
+RequirementGapItem,
+RequirementGapStatus,
   Standard,
 } from '@/lib/types'
 import standardsData from '@/standards.json'
@@ -253,11 +255,24 @@ const MATERIAL_TERMS = [
 ]
 
 const APPLICATION_TERMS = [
+  'human consumption',
+'food consumption',
+'drinking',
+'drinking water',
+'packaged drinking water',
   'construction',
   'building',
   'reinforced concrete',
   'water supply',
   'potable water',
+  'drinking water',
+  'human consumption',
+  'for human consumption',
+  'packaged water',
+  'packaged drinking water',
+  'food consumption',
+  'food processing',
+  'food hygiene',
   'drainage',
   'irrigation',
   'road',
@@ -383,6 +398,12 @@ function extractRequirement(
   const normalizedRequirement = normalize(requirement)
 
   const productTerms = [
+    'packaged water',
+'packaged drinking water',
+'drinking water',
+'bottled water',
+'potable water',
+'water for human consumption',
     'reinforcement bars',
 'reinforcing bars',
 'deformed steel bars',
@@ -412,9 +433,8 @@ function extractRequirement(
     'switchgear',
   ]
 
-  const product =
-    firstMatchingPhrase(normalizedRequirement, productTerms)
-    
+const product =
+  firstMatchingPhrase(normalizedRequirement, productTerms)
 
   const material =
     firstMatchingPhrase(normalizedRequirement, MATERIAL_TERMS)
@@ -494,26 +514,76 @@ function extractRequirement(
     new Set(specialTerms),
   ).join(', ')
 
-  const knownFieldTerms = [
-    product,
-    material,
-    application,
-    grade,
-    dimensions,
-    performance,
-    testing,
-    marking,
-    specialRequirements,
-  ]
-    .filter(Boolean)
-    .join(' ')
+    /*
+   * Do NOT treat every unmatched word as an "other technical property".
+   *
+   * Generic requirement words such as:
+   * "packaged", "water", "human", "consumption"
+   * may be important to retrieval but are not automatically
+   * technical properties.
+   *
+   * Other technical properties should only contain explicit
+   * technical-looking phrases that are not already represented
+   * by another structured field.
+   */
 
-  const otherTechnicalProperties = tokenize(requirement)
-    .filter(
-      (token) =>
-        !tokenize(knownFieldTerms).includes(token),
+  const TECHNICAL_PROPERTY_TERMS = [
+    'ph',
+    'tds',
+    'turbidity',
+    'chloride',
+    'sulphate',
+    'sulfate',
+    'hardness',
+    'alkalinity',
+    'microbial',
+    'microbiological',
+    'bacterial',
+    'coliform',
+    'e coli',
+    'temperature',
+    'pressure',
+    'strength',
+    'density',
+    'viscosity',
+    'elongation',
+    'tensile',
+    'compressive',
+    'impact',
+    'hardness',
+    'resistance',
+    'corrosion resistance',
+    'fire resistance',
+    'purity',
+    'sterility',
+    'contamination',
+    'composition',
+  ]
+
+  const explicitTechnicalProperties =
+    containsAny(
+      normalizedRequirement,
+      TECHNICAL_PROPERTY_TERMS,
     )
-    .join(', ')
+
+  const otherTechnicalProperties =
+    Array.from(
+      new Set(explicitTechnicalProperties),
+    )
+      .filter(
+        (term) =>
+          ![
+            performance,
+            testing,
+            marking,
+            specialRequirements,
+          ]
+            .filter(Boolean)
+            .some((field) =>
+              normalize(field).includes(normalize(term)),
+            ),
+      )
+      .join(', ')
 
   return {
     product,
@@ -865,135 +935,384 @@ function createRequirementGap(
   analysis: RequirementAnalysis,
   standard: Standard,
 ): RequirementGapAnalysis {
-  const searchableMetadata = normalize(
-    [
-      standard.code,
-      standard.title,
-      standard.category,
-      standard.application,
-      ...standard.applicableAreas,
-    ].join(' '),
-  )
-
+  const items: RequirementGapItem[] = []
   const verified: string[] = []
   const unavailable: string[] = []
+  const needsVerification: string[] = []
 
-  const checkField = (
-    label: string,
-    value: string,
+  const fieldText = (
+    ...values: Array<string | undefined | null>
+  ): string => {
+    return normalize(
+      values
+        .filter(
+          (value): value is string =>
+            typeof value === 'string' && value.trim().length > 0,
+        )
+        .join(' '),
+    )
+  }
+
+  const hasMatch = (
+    requested: string,
+    available: string,
+  ): boolean => {
+    const request = normalize(requested)
+    const source = normalize(available)
+
+    if (!request || !source) {
+      return false
+    }
+
+    if (source.includes(request)) {
+      return true
+    }
+
+    const tokens = tokenize(request).filter(
+      (token) => token.length > 2,
+    )
+
+    if (tokens.length === 0) {
+      return false
+    }
+
+    const matched = tokens.filter((token) =>
+      source.includes(token),
+    )
+
+    /*
+     * Require a meaningful portion of the request to match.
+     * One generic word such as "water" should not be enough.
+     */
+    return (
+      matched.length >= Math.max(
+        1,
+        Math.ceil(tokens.length * 0.5),
+      )
+    )
+  }
+
+  const addItem = (
+    field: string,
+    requestedValue: string,
+    status: RequirementGapStatus,
+    explanation: string,
   ) => {
-    if (!value) {
+    if (!requestedValue?.trim()) {
       return
     }
 
-    const tokens = tokenize(value)
+    const item: RequirementGapItem = {
+      field,
+      requestedValue,
+      status,
+      explanation,
+    }
 
-    const matched = tokens.filter((token) =>
-      searchableMetadata.includes(token),
+    items.push(item)
+
+    const message =
+      `${field}: "${requestedValue}" ${explanation}`
+
+    if (status === 'available') {
+      verified.push(message)
+    } else if (status === 'unavailable') {
+      unavailable.push(message)
+    } else {
+      needsVerification.push(message)
+    }
+  }
+
+  /*
+   * PRODUCT
+   *
+   * Product/category/title/scope are appropriate evidence for
+   * identifying what the standard is about.
+   */
+  if (analysis.product) {
+    const source = fieldText(
+      standard.title,
+      standard.category,
+      standard.scope,
+      standard.application,
+      ...standard.applicableAreas,
     )
 
-    if (matched.length > 0) {
-      verified.push(
-        `${label}: "${value}" is reflected in the available standard metadata.`,
+    if (hasMatch(analysis.product, source)) {
+      addItem(
+        'Product',
+        analysis.product,
+        'available',
+        'is represented by the standard title, scope, category, or application metadata.',
       )
     } else {
-      unavailable.push(
-        `${label}: "${value}" could not be verified from the available source.`,
+      addItem(
+        'Product',
+        analysis.product,
+        'unavailable',
+        'is not explicitly represented in the available standard information.',
       )
     }
   }
 
-  checkField('Product', analysis.product)
-  checkField('Material', analysis.material)
-  checkField('Application', analysis.application)
+  /*
+   * MATERIAL
+   */
+  if (analysis.material) {
+    const source = fieldText(
+      standard.material,
+      standard.technicalRequirements.material,
+      standard.scope,
+    )
 
-  /**
-   * These fields are particularly important:
-   * even if the words appear in a title, that does NOT establish
-   * the technical property or compliance.
+    if (hasMatch(analysis.material, source)) {
+      addItem(
+        'Material',
+        analysis.material,
+        'available',
+        'is represented in the available material/scope information.',
+      )
+    } else {
+      addItem(
+        'Material',
+        analysis.material,
+        'unavailable',
+        'is not explicitly represented in the available material information.',
+      )
+    }
+  }
+
+  /*
+   * APPLICATION
+   */
+  if (analysis.application) {
+    const source = fieldText(
+      standard.application,
+      standard.scope,
+      ...standard.applicableAreas,
+    )
+
+    if (hasMatch(analysis.application, source)) {
+      addItem(
+        'Application',
+        analysis.application,
+        'available',
+        'is represented in the standard scope or application information.',
+      )
+    } else {
+      addItem(
+        'Application',
+        analysis.application,
+        'unavailable',
+        'is not explicitly represented in the available application/scope information.',
+      )
+    }
+  }
+
+  /*
+   * GRADE
+   *
+   * A mention is not enough to establish compliance.
    */
   if (analysis.grade) {
-    if (
-      searchableMetadata.includes(
-        normalize(analysis.grade),
-      )
-    ) {
-      verified.push(
-        `Grade: "${analysis.grade}" is mentioned in the available metadata; technical compliance is not established.`,
+    const source = fieldText(
+  standard.technicalRequirements.mechanicalProperties,
+  standard.technicalRequirements.performance,
+  standard.scope,
+)
+
+    if (hasMatch(analysis.grade, source)) {
+      addItem(
+        'Grade',
+        analysis.grade,
+        'needs-verification',
+        'is mentioned in the available standard information, but the exact grade requirement must be verified against the applicable IS standard.',
       )
     } else {
-      unavailable.push(
-        `Grade: "${analysis.grade}" could not be verified from the available source.`,
+      addItem(
+        'Grade',
+        analysis.grade,
+        'unavailable',
+        'could not be identified in the available standard information.',
       )
     }
   }
 
+  /*
+   * DIMENSIONS
+   */
   if (analysis.dimensions) {
-    if (
-      searchableMetadata.includes(
-        normalize(analysis.dimensions),
-      )
-    ) {
-      verified.push(
-        `Dimensions: "${analysis.dimensions}" are mentioned in the available metadata; dimensional compliance is not established.`,
+   const source = fieldText(
+  standard.technicalRequirements.dimensions,
+  standard.scope,
+)
+
+    if (hasMatch(analysis.dimensions, source)) {
+      addItem(
+        'Dimensions',
+        analysis.dimensions,
+        'needs-verification',
+        'are represented in the available dimensional information, but exact dimensional compliance requires verification.',
       )
     } else {
-      unavailable.push(
-        `Dimensions: "${analysis.dimensions}" are not available in the current dataset.`,
+      addItem(
+        'Dimensions',
+        analysis.dimensions,
+        'unavailable',
+        'could not be identified in the available dimensional information.',
       )
     }
   }
 
+  /*
+   * PERFORMANCE
+   */
   if (analysis.performance) {
-    unavailable.push(
-      `Performance: "${analysis.performance}" could not be verified from the available source.`,
-    )
-  }
+   const source = fieldText(
+  standard.technicalRequirements.performance,
+  standard.technicalRequirements.mechanicalProperties,
+  standard.scope,
+)
 
-  if (analysis.testing) {
-    unavailable.push(
-      `Testing: "${analysis.testing}" could not be verified from the available source.`,
-    )
-  }
-
-  if (analysis.marking) {
-    unavailable.push(
-      `Marking: "${analysis.marking}" could not be verified from the available source.`,
-    )
-  }
-
-  if (analysis.specialRequirements) {
-    const specialTokens = tokenize(
-      analysis.specialRequirements,
-    )
-
-    const matchedSpecial = specialTokens.filter((token) =>
-      searchableMetadata.includes(token),
-    )
-
-    if (matchedSpecial.length > 0) {
-      verified.push(
-        `Special requirement: "${analysis.specialRequirements}" is reflected in the available metadata; compliance is not established.`,
+    if (hasMatch(analysis.performance, source)) {
+      addItem(
+        'Performance',
+        analysis.performance,
+        'needs-verification',
+        'has related information in the available standard data, but the requested performance value must be verified against the detailed standard requirements.',
       )
     } else {
-      unavailable.push(
-        `Special requirement: "${analysis.specialRequirements}" could not be verified from the available source.`,
+      addItem(
+        'Performance',
+        analysis.performance,
+        'unavailable',
+        'is not represented in the available performance information.',
       )
     }
   }
 
-  if (analysis.otherTechnicalProperties) {
-    unavailable.push(
-      `Other technical properties: "${analysis.otherTechnicalProperties}" could not be verified from the available source.`,
+  /*
+   * TESTING
+   */
+  if (analysis.testing) {
+    const source = fieldText(
+      standard.technicalRequirements.testing,
+      standard.testingRequirements.join(' '),
+      standard.scope,
     )
+
+    if (hasMatch(analysis.testing, source)) {
+      addItem(
+        'Testing',
+        analysis.testing,
+        'needs-verification',
+        'has related testing information available, but the exact applicable test method and acceptance requirements must be verified.',
+      )
+    } else {
+      addItem(
+        'Testing',
+        analysis.testing,
+        'unavailable',
+        'is not represented in the available testing information.',
+      )
+    }
   }
 
- return {
-  items: [],
-  verified: Array.from(new Set(verified)),
-  unavailable: Array.from(new Set(unavailable)),
-  needsVerification: [],
-}
+  /*
+   * MARKING
+   */
+  if (analysis.marking) {
+    const source = fieldText(
+      standard.technicalRequirements.marking,
+      standard.markingRequirements.join(' '),
+    )
+
+    if (hasMatch(analysis.marking, source)) {
+      addItem(
+        'Marking',
+        analysis.marking,
+        'needs-verification',
+        'has related marking information available, but the exact marking requirement must be verified.',
+      )
+    } else {
+      addItem(
+        'Marking',
+        analysis.marking,
+        'unavailable',
+        'is not represented in the available marking information.',
+      )
+    }
+  }
+
+  /*
+   * SPECIAL REQUIREMENTS
+   */
+  if (analysis.specialRequirements) {
+    const source = fieldText(
+      standard.scope,
+      standard.application,
+      standard.technicalRequirements.performance,
+      standard.technicalRequirements.material,
+      standard.technicalRequirements.testing,
+      standard.technicalRequirements.marking,
+    )
+
+    if (hasMatch(analysis.specialRequirements, source)) {
+      addItem(
+        'Special requirements',
+        analysis.specialRequirements,
+        'needs-verification',
+        'have related information in the available standard data, but the exact requirement must be verified against the applicable standard.',
+      )
+    } else {
+      addItem(
+        'Special requirements',
+        analysis.specialRequirements,
+        'unavailable',
+        'are not explicitly represented in the available standard information.',
+      )
+    }
+  }
+
+  /*
+   * OTHER TECHNICAL PROPERTIES
+   */
+  if (analysis.otherTechnicalProperties) {
+    const source = fieldText(
+      standard.scope,
+      standard.application,
+      standard.technicalRequirements.material,
+      standard.technicalRequirements.dimensions,
+      standard.technicalRequirements.performance,
+      standard.technicalRequirements.testing,
+      standard.technicalRequirements.marking,
+    )
+
+    if (hasMatch(analysis.otherTechnicalProperties, source)) {
+      addItem(
+        'Other technical properties',
+        analysis.otherTechnicalProperties,
+        'needs-verification',
+        'have related information in the available standard data, but the exact technical requirement must be verified.',
+      )
+    } else {
+      addItem(
+        'Other technical properties',
+        analysis.otherTechnicalProperties,
+        'unavailable',
+        'are not represented in the available standard information.',
+      )
+    }
+  }
+
+  return {
+    items,
+    verified: Array.from(new Set(verified)),
+    unavailable: Array.from(new Set(unavailable)),
+    needsVerification: Array.from(
+      new Set(needsVerification),
+    ),
+  }
 }
 
 function buildExplanation(
