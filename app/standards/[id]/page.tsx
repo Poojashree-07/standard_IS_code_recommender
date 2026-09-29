@@ -70,7 +70,7 @@ export default async function StandardDetailPage({
       {/* Header */}
       <header className="mt-5">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-md bg-primary/10 px-2.5 py-1 font-mono text-sm font-semibold text-primary">
+          <span className="rounded-md bg-primary/10 px-2.5 py-1 font-mono text-xl font-semibold text-primary">
             {standard.code}
           </span>
           <StatusBadge status={standard.status} />

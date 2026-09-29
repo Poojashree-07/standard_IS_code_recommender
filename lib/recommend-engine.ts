@@ -654,16 +654,64 @@ function scoreStandard(
 
 let points = 0
 let possiblePoints = 0
+console.log('SCORING:', standard.code, {
+  product: analysis.product,
+  application: analysis.application,
+  title,
+  points,
+})
 
 const matchedConcepts: string[] = []
 const matchedSignals: string[] = []
 
 const normalizedRequirement = normalize(requirement)
-const isPackagedDrinkingWater =
-  normalizedRequirement.includes('packaged drinking water') ||
+// Strong product-intent boost for packaged drinking water.
+// A standard whose title explicitly identifies the requested
+// product should outrank generic food/hygiene standards.
+const packagedWaterIntent =
   normalizedRequirement.includes('packaged water') ||
-  normalizedRequirement.includes('bottled water') ||
-  normalizedRequirement.includes('water for human consumption')
+  normalizedRequirement.includes('packaged drinking water') ||
+  normalizedRequirement.includes('bottled water')
+
+const isExactPackagedDrinkingWaterStandard =
+  title.includes('packaged drinking water')
+
+const isNaturalMineralWaterStandard =
+  title.includes('packaged natural mineral water')
+
+const isDrinkingWaterStandard =
+  title.includes('drinking water') ||
+  title.includes('water specification')
+
+/*
+ * Product specificity hierarchy:
+ *
+ * 1. Packaged drinking water
+ * 2. Packaged natural mineral water
+ * 3. Generic drinking water
+ *
+ * The exact product standard receives the strongest boost.
+ */
+if (packagedWaterIntent) {
+  if (isExactPackagedDrinkingWaterStandard) {
+    points += 140
+    possiblePoints += 140
+    matchedConcepts.push('packaged drinking water')
+    matchedSignals.push('Exact product match')
+  } else if (isNaturalMineralWaterStandard) {
+    points += 100
+    possiblePoints += 100
+    matchedConcepts.push('packaged natural mineral water')
+    matchedSignals.push('Specific product-category match')
+  } else if (isDrinkingWaterStandard) {
+    points += 60
+    possiblePoints += 60
+    matchedConcepts.push('drinking water')
+    matchedSignals.push('Product-category match')
+  }
+}
+
+
 
 const exactPhraseMatches = [
   'packaged drinking water',
@@ -894,6 +942,10 @@ if (
 
   points += Math.min(contextualMatches * 1, 10)
   possiblePoints += 10
+  // Product-specific standards receive a minimum relevance floor.
+// This prevents generic standards that merely mention "human
+// consumption" from outranking the actual product standard.
+
 
   const baseScore =
   possiblePoints > 0
@@ -928,7 +980,7 @@ if (typeof semanticScore === 'number') {
  *
  * This affects relevance ranking only.
  */
-if (isPackagedDrinkingWater) {
+if (packagedWaterIntent) {
   const waterProductMatch =
     title.includes('packaged drinking water') ||
     title.includes('packaged water') ||
@@ -1536,7 +1588,7 @@ export function rankStandards(
 
   return scored
     .filter((item) => item.score > 0)
-    .slice(0, 5)
+    .slice(0, 20)
     .map(
       ({
         standard,
