@@ -43,9 +43,9 @@ export function StandardCard({
             <Badge variant="outline" className="font-mono text-[11px]">
               #{rank} candidate
             </Badge>
-            <span className="rounded-md bg-primary/10 px-2 py-0.5 font-mono text-xs font-semibold text-primary">
-              {recommendation.code}
-            </span>
+            <span className="rounded-md bg-primary/10 px-2 py-0.5 font-mono text-sm font-semibold text-primary">
+  {recommendation.code}
+</span>
             {standard && <StatusBadge status={standard.status} />}
             
           </div>

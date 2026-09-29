@@ -258,17 +258,16 @@ const APPLICATION_TERMS = [
   'human consumption',
 'food consumption',
 'drinking',
-'drinking water',
-'packaged drinking water',
+
   'construction',
   'building',
   'reinforced concrete',
   'water supply',
-  'potable water',
+  
   'drinking water',
   'human consumption',
   'for human consumption',
-  'packaged water',
+  
   'packaged drinking water',
   'food consumption',
   'food processing',
@@ -660,6 +659,11 @@ const matchedConcepts: string[] = []
 const matchedSignals: string[] = []
 
 const normalizedRequirement = normalize(requirement)
+const isPackagedDrinkingWater =
+  normalizedRequirement.includes('packaged drinking water') ||
+  normalizedRequirement.includes('packaged water') ||
+  normalizedRequirement.includes('bottled water') ||
+  normalizedRequirement.includes('water for human consumption')
 
 const exactPhraseMatches = [
   'packaged drinking water',
@@ -910,6 +914,49 @@ if (typeof semanticScore === 'number') {
 
   if (!matchedSignals.includes('Semantic similarity match')) {
     matchedSignals.push('Semantic similarity match')
+  }
+}
+/*
+ * Product-specific protection:
+ * If the user explicitly asks for packaged/drinking water,
+ * standards that actually describe packaged drinking water
+ * should receive a strong relevance boost.
+ *
+ * This affects relevance ranking only.
+ */
+if (isPackagedDrinkingWater) {
+  const waterProductMatch =
+    title.includes('packaged drinking water') ||
+    title.includes('packaged water') ||
+    title.includes('drinking water') ||
+    title.includes('bottled water') ||
+    title.includes('mineral water') ||
+    detailedMetadata.includes('packaged drinking water') ||
+    detailedMetadata.includes('packaged water') ||
+    detailedMetadata.includes('drinking water')
+
+  if (waterProductMatch) {
+    finalScore = Math.min(finalScore + 0.35, 1)
+
+    if (!matchedSignals.includes('Specific product match')) {
+      matchedSignals.push('Specific product match')
+    }
+  } else {
+    /*
+     * Prevent standards about unrelated uses of water
+     * (for example concrete mixing) from outranking a
+     * genuine drinking-water standard merely because
+     * they contain the word "water".
+     */
+    if (
+      title.includes('concrete') ||
+      title.includes('cement') ||
+      title.includes('wastewater') ||
+      title.includes('sewage') ||
+      title.includes('irrigation')
+    ) {
+      finalScore *= 0.35
+    }
   }
 }
 
